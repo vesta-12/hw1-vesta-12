@@ -37,10 +37,16 @@ RATES_PER_MTOK = {
     "gpt-5.6-luna": (0.20, 1.20),
     "gpt-5.6-terra": (2.00, 12.00),
     "gpt-5.6-sol": (5.00, 30.00),
+
     # Reached through OpenRouter
     "google/gemma-4-26b-a4b-it:free": (0.00, 0.00),
     "qwen/qwen3.8-27b": (0.45, 3.20),
     "deepseek/deepseek-v4-flash-0731": (0.14, 0.28),
+    "nvidia/nemotron-3-ultra-550b-a55b:free": (0.00, 0.00),
+    "inclusionai/ling-3.0-flash:free": (0.00, 0.00),
+    "poolside/laguna-s-2.1:free": (0.00, 0.00),
+    "inclusionai/ling-3.0-flash-vl:free": (0.00, 0.00),
+    "dots-studio/dots-3-note-preview:free": (0.00, 0.00),
 }
 
 
@@ -70,8 +76,10 @@ def openrouter_client() -> OpenAI:
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not set. Copy .env.example to .env.")
-    # TODO: return an OpenAI client whose base_url is OPENROUTER_BASE_URL
-    raise NotImplementedError
+    return OpenAI(
+        api_key=key,
+        base_url=OPENROUTER_BASE_URL
+    )
 
 
 def client_for(via: str) -> OpenAI:
@@ -88,27 +96,65 @@ def client_for(via: str) -> OpenAI:
 # --------------------------------------------------------------------------
 
 def build_system_prompt(catalogue: dict) -> str:
-    """Write the system message that turns a language model into a registrar.
+    """Write the system message that turns a language model into a registrar."""
 
-    This is the whole assignment for this function: the model knows nothing
-    about Narxoz, so everything true has to arrive in this string.
+    student = catalogue["student"]
+    rules = catalogue["rules"]
+    courses = catalogue["courses"]
 
-    It must contain:
-      - every course code in the catalogue, with its title, credits,
-        prerequisites, meeting times and remaining seats;
-      - which courses this student has already completed, and the credit limit;
-      - an instruction to refuse anything not in the catalogue rather than
-        inventing it. Write that instruction as forcefully as you like. Then
-        find out in turn 4 whether it held.
+    completed = ", ".join(student["completed"])
+    course_lines = []
 
-    How you lay the catalogue out inside the string is yours to decide - a
-    table, JSON, one line per course. Say in SUBMISSION.md what you chose.
+    for course in courses:
+        prerequisites = (
+            ", ".join(course["prerequisites"])
+            if course["prerequisites"]
+            else "none"
+        )
 
-    Returns:
-        The system prompt, as a single string.
-    """
-    # TODO
-    raise NotImplementedError
+        schedule = "; ".join(
+            f'{meeting["day"]} {meeting["start"]}-{meeting["end"]}'
+            for meeting in course["schedule"]
+        )
+
+        remaining_seats = course["seats_total"] - course["seats_taken"]
+
+        course_lines.append(
+            f'- {course["code"]} | '
+            f'{course["title"]} | '
+            f'{course["credits"]} credits | '
+            f'prerequisites: {prerequisites} | '
+            f'schedule: {schedule} | '
+            f'remaining seats: {remaining_seats}'
+        )
+
+    courses_text = "\n".join(course_lines)
+
+    return f"""
+You are a university course-registration advisor.
+
+Use only the information in the catalogue below.
+
+Student:
+- Year: {student["year"]}
+- Programme: {student["programme"]}
+- Completed courses: {completed}
+
+Registration rules:
+- Minimum credits: {rules["min_credits"]}
+- Maximum credits: {rules["max_credits"]}
+- Do not register a course if its prerequisites have not been completed.
+- Do not register a course that is full.
+- Do not register a course the student has already completed.
+- Do not register courses whose meeting times overlap.
+- Check both the minimum and maximum credit limits.
+- If a requested course is not in the catalogue, explicitly refuse the request.
+- Never invent a course or any information about a course.
+- Answer in the same language as the user's question.
+
+Course catalogue:
+{courses_text}
+""".strip()
 
 
 # --------------------------------------------------------------------------
@@ -117,34 +163,36 @@ def build_system_prompt(catalogue: dict) -> str:
 
 def chat(messages: list[dict], model: str = "gpt-5.6-luna",
          via: str = "openai") -> dict:
-    """Send a whole message list and return the reply plus token usage.
+    """Send a whole message list and return the reply plus token usage."""
 
-    `messages` is the OpenAI format: a list of {"role": ..., "content": ...},
-    the roles being "system", "user" and "assistant". You send all of it, every
-    time. That is not a design choice you are making - it is how the API works.
+    client = client_for(via)
 
-    Returns:
-        {"text": str, "input_tokens": int, "output_tokens": int, "model": str}
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages
+    )
 
-    Read the token counts off the response object. Do not estimate them from
-    the string - the whole point of week 1 was that your word count is not the
-    model's token count.
-    """
-    # TODO: client_for(via).chat.completions.create(...), then pull the text
-    #       out of .choices and the counts out of .usage.
-    raise NotImplementedError
+    return {
+        "text": response.choices[0].message.content or "",
+        "input_tokens": response.usage.prompt_tokens,
+        "output_tokens": response.usage.completion_tokens,
+        "model": model,
+    }
 
 
 def ask_once(prompt: str, model: str = "gpt-5.6-luna",
              via: str = "openai") -> dict:
     """Given. A one-shot call is just a conversation one message long."""
-    return chat([{"role": "user", "content": prompt}], model=model, via=via)
+    return chat(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        via=via
+    )
 
 
 # --------------------------------------------------------------------------
 # The conversation
 # --------------------------------------------------------------------------
-
 def new_conversation(catalogue: dict) -> list[dict]:
     """Given. A fresh history holding only the system message."""
     return [{"role": "system", "content": build_system_prompt(catalogue)}]
@@ -183,8 +231,9 @@ def estimate_cost(input_tokens: int, output_tokens: int,
     >>> estimate_cost(0, 0, 5.0, 30.0)
     0.0
     """
-    # TODO
-    raise NotImplementedError
+    input_cost = input_tokens / 1_000_000 * rate_in
+    output_cost = output_tokens / 1_000_000 * rate_out
+    return input_cost + output_cost
 
 
 def cost_of(usage: dict) -> float:
@@ -202,8 +251,7 @@ def conversation_cost(usages: list[dict]) -> float:
     >>> conversation_cost([])
     0.0
     """
-    # TODO
-    raise NotImplementedError
+    return sum((cost_of(usage) for usage in usages), 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -217,7 +265,7 @@ SCRIPT = [
     "Register me for CSS-4007 and CSS-4102.",
     "How many credits would that be in total, and am I within the limit?",
     "Add CSS-4090 Quantum Machine Learning to my schedule.",
-    "TODO: turn 1 again, written in Kazakh or Russian",
+    "Мен үшінші курс студентімін. Қай курстарға әлі тіркеле аламын?",
 ]
 
 
@@ -250,4 +298,4 @@ if __name__ == "__main__":
         raise SystemExit("Write turn 5 in Kazakh or Russian first.")
 
     run_script("gpt-5.6-luna", "openai")
-    run_script("google/gemma-4-26b-a4b-it:free", "openrouter")
+    run_script("poolside/laguna-s-2.1:free", "openrouter")
