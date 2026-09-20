@@ -61,19 +61,19 @@ def encode(text: str, encoding_name: str = "o200k_base") -> list[int]:
 
     Two lines: get the encoding, encode the text.
     """
-    # TODO: tiktoken.get_encoding(encoding_name).encode(text)
-    raise NotImplementedError
+    encoding = tiktoken.get_encoding(encoding_name)
+    return encoding.encode(text)
 
 
 def pieces(ids: list[int], encoding_name: str = "o200k_base") -> list[str]:
-    """The text of each token, one string per id.
+    """The text of each token, one string per id."""
 
-    This is the function that makes the whole sublab visible - it is the
-    difference between "8 tokens" and seeing the word come apart. Decode each
-    id on its own, not the list as a whole.
-    """
-    # TODO
-    raise NotImplementedError
+    encoding = tiktoken.get_encoding(encoding_name)
+
+    return [
+        encoding.decode([token_id])
+        for token_id in ids
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -83,61 +83,42 @@ def pieces(ids: list[int], encoding_name: str = "o200k_base") -> list[str]:
 # --------------------------------------------------------------------------
 
 def tokens_per_char(text: str, ids: list[int]) -> float:
-    """How many tokens each character of `text` cost.
+    """How many tokens each character of `text` cost."""
 
-    The comparison across languages only works per character; a Kazakh sentence
-    and its English translation are not the same length, so raw token counts
-    would be measuring the translation, not the tokenizer.
+    if not text:
+        return 0.0
 
-    Return 0.0 for empty text rather than dividing by zero.
-
-    >>> tokens_per_char("abcd", [1, 2])
-    0.5
-    >>> tokens_per_char("", [])
-    0.0
-    """
-    # TODO
-    raise NotImplementedError
+    return len(ids) / len(text)
 
 
 def first_divergence(a: list[int], b: list[int]) -> int | None:
-    """Index of the first position where two token streams differ.
+    """Index of the first position where two token streams differ."""
 
-    Returns None if one is a prefix of the other and they are the same length,
-    i.e. if the streams are identical. If they share a prefix and then differ -
-    including when one simply runs out - return the length of the shared prefix.
+    for i, (token_a, token_b) in enumerate(zip(a, b)):
+        if token_a != token_b:
+            return i
 
-    >>> first_divergence([1, 2, 3], [1, 2, 3])
+    if len(a) != len(b):
+        return min(len(a), len(b))
 
-    >>> first_divergence([1, 2, 3], [1, 9, 3])
-    1
-    >>> first_divergence([1, 2], [1, 2, 3])
-    2
-    """
-    # TODO
-    raise NotImplementedError
+    return None
 
 
 def foreign_chars(text: str) -> list[tuple[int, str, str]]:
-    """Every character that is a letter but not a Cyrillic one.
+    """Every character that is a letter but not a Cyrillic one."""
 
-    This is how you find a homoglyph without knowing in advance where it is.
-    A Latin `c` sitting inside a Kazakh word looks identical to a Cyrillic `с`
-    on screen; it is a different code point, and `unicodedata.name` says so.
+    result = []
 
-    Returns:
-        A list of (index, character, unicode name), in order. Skip anything
-        that is not a letter - spaces, digits and punctuation are not the
-        interesting case.
+    for i, ch in enumerate(text):
+        if not ch.isalpha():
+            continue
 
-    >>> foreign_chars("аcа")[0][:2]
-    (1, 'c')
-    >>> foreign_chars("Астана")
-    []
-    """
-    # TODO: unicodedata.name(ch) for each letter; a Cyrillic one has "CYRILLIC"
-    #       in its name.
-    raise NotImplementedError
+        name = unicodedata.name(ch, "")
+
+        if "CYRILLIC" not in name:
+            result.append((i, ch, name))
+
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -145,16 +126,31 @@ def foreign_chars(text: str) -> list[tuple[int, str, str]]:
 # --------------------------------------------------------------------------
 
 def language_table(encoding_name: str) -> dict[str, dict]:
-    """Total tokens, total characters and tokens-per-character, per language.
+    """Total tokens, total characters and tokens-per-character, per language."""
 
-    Sum over all six triplets, do not average the per-sentence ratios - a long
-    sentence and a short one should not count equally.
+    triplets = load_triplets()
+    result = {}
 
-    Returns:
-        {"kk": {"tokens": int, "chars": int, "tok_per_char": float}, "ru": ..., "en": ...}
-    """
-    # TODO
-    raise NotImplementedError
+    for lang in LANGS:
+        total_tokens = 0
+        total_chars = 0
+
+        for row in triplets:
+            text = row[lang]
+            ids = encode(text, encoding_name)
+
+            total_tokens += len(ids)
+            total_chars += len(text)
+
+        ratio = total_tokens / total_chars if total_chars else 0.0
+
+        result[lang] = {
+            "tokens": total_tokens,
+            "chars": total_chars,
+            "tok_per_char": ratio,
+        }
+
+    return result
 
 
 def cost_per_thousand(tok_per_char: float, chars: int,
@@ -168,8 +164,9 @@ def cost_per_thousand(tok_per_char: float, chars: int,
     >>> round(cost_per_thousand(0.5, 100, 10.0), 6)
     0.5
     """
-    # TODO
-    raise NotImplementedError
+    tokens_per_sentence = tok_per_char * chars
+    tokens_for_thousand = tokens_per_sentence * 1000
+    return tokens_for_thousand / 1_000_000 * rate_in
 
 
 # --------------------------------------------------------------------------
@@ -178,21 +175,20 @@ def cost_per_thousand(tok_per_char: float, chars: int,
 
 def homoglyph_report(corrupted: str, correct: str,
                      encoding_name: str = "o200k_base") -> dict:
-    """Side-by-side forensics on one corrupted sentence.
+    """Side-by-side forensics on one corrupted sentence."""
 
-    Returns:
-        {
-          "foreign": [(index, char, unicode_name), ...],   # from `foreign_chars`
-          "tokens_correct": int,
-          "tokens_corrupted": int,
-          "delta": int,                 # corrupted minus correct
-          "diverge_at": int | None,     # from `first_divergence`
-          "pieces_correct": [str, ...],
-          "pieces_corrupted": [str, ...],
-        }
-    """
-    # TODO
-    raise NotImplementedError
+    ids_correct = encode(correct, encoding_name)
+    ids_corrupted = encode(corrupted, encoding_name)
+
+    return {
+        "foreign": foreign_chars(corrupted),
+        "tokens_correct": len(ids_correct),
+        "tokens_corrupted": len(ids_corrupted),
+        "delta": len(ids_corrupted) - len(ids_correct),
+        "diverge_at": first_divergence(ids_correct, ids_corrupted),
+        "pieces_correct": pieces(ids_correct, encoding_name),
+        "pieces_corrupted": pieces(ids_corrupted, encoding_name),
+    }
 
 
 def show_homoglyphs(encoding_name: str = "o200k_base") -> None:
