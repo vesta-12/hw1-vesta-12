@@ -21,9 +21,9 @@ DATA = Path(__file__).resolve().parent.parent / "data" / "kazakh_errors.json"
 
 # Every model you must run. Keep the order - it is the order of your table.
 MODELS = [
-    ("openrouter", "google/gemma-4-26b-a4b-it:free"),
-    ("openrouter", "qwen/qwen3.8-27b"),
-    ("openrouter", "deepseek/deepseek-v4-flash-0731"),
+    ("openrouter", "poolside/laguna-s-2.1:free"),
+    ("openrouter", "inclusionai/ling-3.0-flash-vl:free"),
+    ("openrouter", "dots-studio/dots-3-note-preview:free"),
     ("openai", "gpt-5.6-luna"),
     ("openai", "gpt-5.6-terra"),
     ("openai", "gpt-5.6-sol"),
@@ -49,49 +49,84 @@ def build_prompt(corrupted: str) -> str:
     Asking for a fixed shape instead of prose is how you make six models
     comparable. Week 3 turns this into a topic.
     """
-    # TODO
-    raise NotImplementedError
+    return f"""Correct the following Kazakh sentence.
+
+    The text may contain incorrect letters, joined words, missing hyphens,
+    doubled letters, or visually similar letters from the wrong alphabet.
+
+    Return exactly one JSON object and nothing else in this format:
+    {{"corrected": "...", "changes": ["...", "..."]}}
+
+    In "corrected", write the fully corrected Kazakh sentence.
+    In "changes", briefly list what you changed.
+
+    Sentence:
+    {corrupted}"""
 
 
 def parse_response(text: str) -> dict:
-    """Pull {"corrected": str, "changes": list} out of the model's reply.
+    """Pull {"corrected": str, "changes": list} out of the model's reply."""
 
-    Models wrap JSON in prose, or in ```json fences, more often than you would
-    like. Be forgiving: find the JSON, parse it, and raise ValueError with the
-    offending text if you truly cannot.
-    """
-    # TODO
-    raise NotImplementedError
+    decoder = json.JSONDecoder()
+
+    for i, char in enumerate(text):
+        if char != "{":
+            continue
+
+        try:
+            obj, _ = decoder.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+
+        if (
+            isinstance(obj, dict)
+            and isinstance(obj.get("corrected"), str)
+            and isinstance(obj.get("changes"), list)
+        ):
+            return {
+                "corrected": obj["corrected"],
+                "changes": obj["changes"],
+            }
+
+    raise ValueError(f"No valid correction JSON found in response: {text!r}")
 
 
 def correct_with(model: str, corrupted: str, via: str) -> dict:
-    """Send one sentence to one model.
+    """Send one sentence to one model."""
 
-    Returns:
-        {"corrected": str, "changes": list, "input_tokens": int,
-         "output_tokens": int, "model": str}
+    prompt = build_prompt(corrupted)
 
-    `via` is "openai" or "openrouter" and goes straight through to
-    `ask_once` from sublab_easy - there is no conversation here, just one
-    prompt and one reply, eight times per model.
-    """
-    # TODO
-    raise NotImplementedError
+    response = ask_once(
+        prompt,
+        model=model,
+        via=via
+    )
+
+    parsed = parse_response(response["text"])
+
+    return {
+        "corrected": parsed["corrected"],
+        "changes": parsed["changes"],
+        "input_tokens": response["input_tokens"],
+        "output_tokens": response["output_tokens"],
+        "model": response["model"],
+    }
 
 
 def score_correction(returned: str, expected: str) -> dict:
-    """Compare a model's output against the published original.
+    """Compare a model's output against the published original."""
 
-    Returns {"exact": bool, "char_diff": int} where char_diff is the number of
-    differing characters (a simple positional comparison is enough; count the
-    length difference too).
+    positional_diff = sum(
+        returned_char != expected_char
+        for returned_char, expected_char in zip(returned, expected)
+    )
 
-    READ THIS: `exact` is a signal, not a grade. Good Kazakh that differs from
-    the original still counts as a correction. Your written analysis is where
-    you make that call.
-    """
-    # TODO
-    raise NotImplementedError
+    length_diff = abs(len(returned) - len(expected))
+
+    return {
+        "exact": returned == expected,
+        "char_diff": positional_diff + length_diff,
+    }
 
 
 def run_all() -> list[dict]:
